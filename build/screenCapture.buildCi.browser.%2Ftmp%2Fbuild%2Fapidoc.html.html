@@ -1,0 +1,222 @@
+<html><head></head><body><div class="apidocDiv">
+<style>
+/*csslint
+*/
+.apidocDiv {
+    background: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+}
+.apidocDiv a[href] {
+    color: #33f;
+    font-weight: bold;
+    text-decoration: none;
+}
+.apidocDiv a[href]:hover {
+    text-decoration: underline;
+}
+.apidocCodeCommentSpan {
+    background: #bbf;
+    color: #000;
+    display: block;
+}
+.apidocCodeKeywordSpan {
+    color: #d00;
+    font-weight: bold;
+}
+.apidocCodePre {
+    background: #eef;
+    border: 1px solid;
+    color: #777;
+    padding: 5px;
+    white-space: pre-wrap;
+}
+.apidocFooterDiv {
+    margin-top: 20px;
+    text-align: center;
+}
+.apidocModuleLi {
+    margin-top: 10px;
+}
+.apidocSectionDiv {
+    border-top: 1px solid;
+    margin-top: 20px;
+}
+.apidocSignatureSpan {
+    color: #777;
+    font-weight: bold;
+}
+</style>
+<h1>api documentation for
+    <a href="https://github.com/pocketjoso/penthouse">penthouse (v0.10.9)</a>
+</h1>
+<h4>Generate critical path CSS for web pages</h4>
+<div class="apidocSectionDiv"><a href="#apidoc.tableOfContents" id="apidoc.tableOfContents"><h1>table of contents</h1></a><ol>
+
+    <li class="apidocModuleLi"><a href="#apidoc.module.penthouse">module penthouse</a><ol>
+
+        <li>
+
+            <a class="apidocElementLiA" href="#apidoc.element.penthouse.penthouse">
+            function <span class="apidocSignatureSpan"></span>penthouse
+            <span class="apidocSignatureSpan">(options, callback)</span>
+            </a>
+
+        </li>
+
+    </ol></li>
+
+</ol></div>
+
+<div class="apidocSectionDiv">
+<h1><a href="#apidoc.module.penthouse" id="apidoc.module.penthouse">module penthouse</a></h1>
+
+
+    <h2>
+        <a href="#apidoc.element.penthouse.penthouse" id="apidoc.element.penthouse.penthouse">
+        function <span class="apidocSignatureSpan"></span>penthouse
+        <span class="apidocSignatureSpan">(options, callback)</span>
+        </a>
+    </h2>
+    <ul>
+    <li>description and source-code<pre class="apidocCodePre">penthouse = function (options, callback) { // jshint ignore: line
+  var stdOut = ''
+  var stdErr = ''
+  // debugging
+  var START_TIME = Date.now()
+  var debuglog = function (msg, isError) {
+    if (m.DEBUG) {
+      var errMsg = 'time: ' + (Date.now() - START_TIME) + ' | ' + (isError ? 'ERR: ' : '') + msg
+      stdErr += errMsg
+      console.error(errMsg)
+    }
+  }
+  normalizeCss.DEBUG = m.DEBUG
+
+  function generateCriticalCss (ast) {
+    var debuggingHelp = '',
+        cp,
+        killTimeout
+
+    var timeoutWait = options.timeout || DEFAULT_TIMEOUT
+
+    var astTmpobj = writeAstToFile(ast)
+
+    var scriptArgs = penthouseScriptArgs(options, astTmpobj.name)
+
+    var phantomJsArgs = [configString].concat(toPhantomJsOptions(options.phantomJsOptions))
+    phantomJsArgs.push(script)
+    phantomJsArgs = phantomJsArgs.concat(scriptArgs)
+
+    cp = spawn(phantomJsBinPath, phantomJsArgs)
+
+    // Errors arise before the process starts
+    cp.on('error', function (err) {
+      debuggingHelp += 'Error executing penthouse using ' + phantomJsBinPath
+      debuggingHelp += err.stack
+      err.debug = debuggingHelp
+      callback(err)
+      // remove the tmp file we created
+      // library would clean up after process ends, but this is better for long living proccesses
+      astTmpobj.removeCallback()
+    })
+
+    cp.stdout.on('data', function (data) {
+      stdOut += data
+    })
+
+    cp.stderr.on('data', function (data) {
+      stdErr += data
+      debuglog(String(data))
+    })
+
+    cp.on('close', function (code) {
+      if (code !== 0) {
+        debuggingHelp += 'PhantomJS process closed with code ' + code
+      }
+    })
+
+    // kill after timeout
+    killTimeout = setTimeout(function () {
+      var msg = 'Penthouse timed out after ' + timeoutWait / 1000 + 's. '
+      debuggingHelp += msg
+      stdErr += msg
+      cp.kill('SIGTERM')
+    }, timeoutWait)
+
+    cp.on('exit', function (code) {
+      if (code === 0) {
+        // promise purely for catching errors,
+        // that otherwise exit node
+        new Promise(function (resolve) {
+          var finalCss = postformatting(stdOut, {
+            maxEmbeddedBase64Length: typeof options.maxEmbeddedBase64Length === 'number' ? options.maxEmbeddedBase64Length : DEFAULT_MAX_EMBEDDED_BASE64_LENGTH
+          }, m.DEBUG, START_TIME)
+
+          if (finalCss.trim().length === 0) {
+            // TODO: this error should surface to user
+            debuglog('Note: Generated critical css was empty for URL: ' + options.url)
+          } else {
+            // remove irrelevant css properties
+            finalCss = apartment(finalCss, {
+              properties: [
+                '(.*)transition(.*)',
+                'cursor',
+                'pointer-events',
+                '(-webkit-)?tap-highlight-color',
+                '(.*)user-select'
+              ],
+              // TODO: move into core phantomjs script
+              selectors: [
+                '::(-moz-)?selection'
+              ]
+            })
+          }
+          callback(null, finalCss)
+          resolve()
+          return
+        })
+        .catch(function (err) {
+          callback(err)
+        })
+      } else {
+        debuggingHelp += 'PhantomJS process exited with code ' + code
+        var err = new Error(stdErr + stdOut)
+        err.code = code
+        err.debug = debuggingHelp
+        err.stdout = stdOut
+        err.stderr = stdErr
+        callback(err)
+      }
+      // we're done here - clean up
+      clearTimeout(killTimeout)
+      // can't rely on that the parent process will be terminated any time soon,
+      // need to rm listeners and kill child process manually
+      process.removeListener('exit', exitHandler)
+      process.removeListener('SIGTERM', sigtermHandler)
+      // remove the tmp file we created
+      // library would clean up after process ends, but this is better for long living proccesses
+      astTmpobj.removeCallback()
+      cp.kill('SIGTERM')
+    })
+
+    function exitHandler () {
+      cp.kill('SIGTERM')
+    }
+    function sigtermHandler () {
+      cp.kill('SIGTERM')
+      process.exit(0)
+    }
+    process.on('exit', exit ...</pre></li>
+    <li>example usage<pre class="apidocCodePre">n/a</pre></li>
+    </ul>
+
+
+</div>
+
+<div class="apidocFooterDiv">
+    [ this document was created with
+    <a href="https://github.com/kaizhu256/node-utility2" target="_blank">utility2</a>
+    ]
+</div>
+</div>
+</body></html>
